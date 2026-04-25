@@ -1,0 +1,114 @@
+{
+  "_comment_top": "Anthropic POST /v1/messages 请求体模板（含 4 个 cache_control 断点）。直接复制后替换 model / tools / system / messages 内容即可发送。注意 cache_control 的位置注释：每个断点都会把'本断点起到上一段断点之间'的全部 token 圈进同一个 cache 条目。",
+
+  "model": "claude-opus-4-7",
+  "max_tokens": 8192,
+
+  "_comment_tools": "断点 1：tools 段最后一个 tool 上挂 cache_control，圈住 tools 段全部内容（每次请求都不变）。",
+  "tools": [
+    {
+      "name": "search",
+      "description": "Search the web for fresh information.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "query": { "type": "string", "description": "Search query" }
+        },
+        "required": ["query"]
+      }
+    },
+    {
+      "name": "finish",
+      "description": "End the run with a final answer.",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "answer": { "type": "string", "description": "Final answer to user" }
+        },
+        "required": ["answer"]
+      },
+      "cache_control": { "type": "ephemeral" }
+    }
+  ],
+
+  "_comment_system": "断点 2：system 段最后一个 text block 上挂 cache_control，圈住 tools + system 全部内容（system prompt 含 persona / constraints / examples，永不带时间戳或 trace_id）。",
+  "system": [
+    {
+      "type": "text",
+      "text": "You are a helpful assistant. Follow these rules: ... [Long persona / constraints / examples here, total >= 4096 tokens for Opus 4.7] ...",
+      "cache_control": { "type": "ephemeral" }
+    }
+  ],
+
+  "_comment_messages": "断点 3 + 断点 4：messages 历史最后一条稳定 block + 当前轮 user/tool_result 末尾各挂一个 cache_control。注意不要在断点之后塞任何易变内容。",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        { "type": "text", "text": "[第 1 轮 user 输入]" }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        { "type": "text", "text": "[第 1 轮 assistant 文本（可空）]" },
+        {
+          "type": "tool_use",
+          "id": "toolu_01abc",
+          "name": "search",
+          "input": { "query": "..." }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_01abc",
+          "content": "[search 返回的内容]",
+          "cache_control": { "type": "ephemeral" }
+        }
+      ]
+    },
+    {
+      "role": "assistant",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_02def",
+          "name": "search",
+          "input": { "query": "..." }
+        }
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "tool_result",
+          "tool_use_id": "toolu_02def",
+          "content": "[最近一轮的 tool_result]",
+          "cache_control": { "type": "ephemeral" }
+        }
+      ]
+    }
+  ],
+
+  "_comment_breakpoints_summary": [
+    "断点 1: tools[1].cache_control  → 圈住 tools 全部",
+    "断点 2: system[0].cache_control → 圈住 tools + system",
+    "断点 3: messages[2].content[0].cache_control → 圈住 tools + system + 历史 messages 到 messages[2]",
+    "断点 4: messages[4].content[0].cache_control → 圈住 tools + system + 全部 messages 到当前轮",
+    "最后一个断点之后只剩 chat-template 收尾结构 token，input_tokens 收敛到 1 或 6"
+  ],
+
+  "_comment_headers": {
+    "x-api-key": "<ANTHROPIC_API_KEY>",
+    "anthropic-version": "2023-06-01",
+    "anthropic-beta": "prompt-caching-2024-07-31",
+    "content-type": "application/json"
+  },
+
+  "_comment_minimum_cache_length": "Opus 4.7 / 4.6 / 4.5 / Mythos Preview / Haiku 4.5 = 4096 tokens；Sonnet 4.6 = 2048；Sonnet 4.5 / Opus 4.1 / Opus 4 / Sonnet 4 / Sonnet 3.7 = 1024；Haiku 3.5 = 2048。每个 cache_control 断点圈住的累计 token 必须 >= 阈值，否则静默不缓存。"
+}
