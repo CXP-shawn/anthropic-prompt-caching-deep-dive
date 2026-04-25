@@ -1,0 +1,108 @@
+{
+  "_comment_top": "4 种典型 usage 形态。每条都标注：本轮发生了什么 → 三个桶各自落到什么数量级。来自 Twin builder run 真实观察 + 故意构造的反例。",
+
+  "examples": [
+    {
+      "label": "首轮（含文本轮，cache 已被并发 run 预热）",
+      "context": "Round 1，model=claude-opus-4-7，tools+system 已被同账号下并行 builder run 写入过同款前缀。当前轮新增 user goal 文本 ~10000 token，被打了断点 3。",
+      "usage": {
+        "input_tokens": 6,
+        "cache_read_input_tokens": 54838,
+        "cache_creation_input_tokens": 10037,
+        "output_tokens": 412
+      },
+      "interpretation": [
+        "cache_read=54838 ← 已有的 tools+system 前缀完全命中",
+        "cache_creation=10037 ← 第 1 轮 user 文本被新写入",
+        "input_tokens=6 ← 形态 B：首轮等同'含 assistant 引导'，断点后 6 个结构 token",
+        "总输入 = 64881 token"
+      ]
+    },
+    {
+      "label": "纯 tool 循环（稳态）",
+      "context": "Round 2，上一轮 assistant 仅 tool_use（无文本）。messages 数组比上轮多了 2 条（assistant tool_use + user tool_result）。两条新内容都被打进了断点 3/4 之内。",
+      "usage": {
+        "input_tokens": 1,
+        "cache_read_input_tokens": 66288,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 87
+      },
+      "interpretation": [
+        "cache_read=66288 ← 整段 prefix 命中（tools+system+全部 messages）",
+        "cache_creation=0 ← 上一轮的 tool_use+tool_result 已经被加进了缓存链，本轮不再新写",
+        "input_tokens=1 ← 形态 A：上一轮 assistant 仅 tool_use，断点后只有 prompt-suffix 1 个 token",
+        "总输入 = 66289 token，但本轮真正按 1× 计费的只有 1 个 token"
+      ]
+    },
+    {
+      "label": "含 assistant 文本的轮次（稳态）",
+      "context": "Round 5，上一轮 assistant 既说了 user-visible 文本又调了 tool。messages 数组多了 2 条。",
+      "usage": {
+        "input_tokens": 6,
+        "cache_read_input_tokens": 67790,
+        "cache_creation_input_tokens": 245,
+        "output_tokens": 580
+      },
+      "interpretation": [
+        "cache_read=67790 ← 上一轮被加入缓存链，本轮整段命中",
+        "cache_creation=245 ← 这次有少量新写入（例如 assistant 的新增文本被圈进了断点 3）",
+        "input_tokens=6 ← 形态 B：上一轮含文本，断点后 6 个 chat-template 结构 token",
+        "总输入 = 68041 token"
+      ]
+    },
+    {
+      "label": "cache 完全失效（反例）",
+      "context": "故意构造：system 段包含 fmt.Sprintf('Current time: %s ...', time.Now())，每轮 system 都变。",
+      "usage": {
+        "input_tokens": 75000,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 412
+      },
+      "interpretation": [
+        "cache_read=0 ← 没有命中（早期 prefix 每轮变化）",
+        "cache_creation=0 ← 看似打了 cache_control 但 server 端因前缀变动不写入（或写入但下一轮立刻失效）",
+        "input_tokens=75000 ← 整段 prompt 都按 1× 倍率走裸输入桶",
+        "信号：cache_read 与 cache_creation 同时为 0 = 必修复",
+        "成本：本轮按完整 75000 token × 1× 计费，与不开 cache 一样贵"
+      ]
+    },
+    {
+      "label": "低于最小阈值（静默失败反例）",
+      "context": "故意构造：model=claude-opus-4-7（阈值 4096），整段 prompt 只有 3500 token。打了 cache_control 但 server 静默忽略。",
+      "usage": {
+        "input_tokens": 3500,
+        "cache_read_input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "output_tokens": 120
+      },
+      "interpretation": [
+        "cache_read=0 + cache_creation=0 + input_tokens 等于 prompt 全长 = 阈值未达的特征三连",
+        "解决方案：把 system / tools 写完整凑过 4096，或换更小阈值的模型（Sonnet 4.5 = 1024）"
+      ]
+    },
+    {
+      "label": "1h cache 同时打 5m 和 1h（共存形态）",
+      "context": "tools 段挂 5m cache_control，system 段挂 1h cache_control。",
+      "usage": {
+        "input_tokens": 1,
+        "cache_read_input_tokens": 65000,
+        "cache_creation_input_tokens": 200,
+        "ephemeral_5m_input_tokens": 100,
+        "ephemeral_1h_input_tokens": 100,
+        "output_tokens": 87
+      },
+      "interpretation": [
+        "cache_creation 拆成两个子桶：5m=100 + 1h=100",
+        "5m 部分按 1.25× 计费，1h 部分按 2× 计费",
+        "命中全部按 0.1×，无论原始 TTL"
+      ]
+    }
+  ],
+
+  "_comment_health_thresholds": {
+    "cache_read_ratio": "> 0.90 健康",
+    "cache_write_ratio": "< 0.05 健康",
+    "input_tokens_value": "应严格属于 {1, 6} 集合"
+  }
+}
